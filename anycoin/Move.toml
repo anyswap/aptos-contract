@@ -1,0 +1,10 @@
+[package]
+name = "anycoin"
+version = "0.0.1"
+upgrade_policy = "compatible"
+
+[dependencies]
+AptosFramework = { git = "https://github.com/aptos-labs/aptos-core.git", subdir = "aptos-move/framework/aptos-framework/", rev = "devnet" }
+
+[addresses]
+TEST="0x10878abd3802be00d674709b1e5554488823f5f825bce8d1efaf370e9aaac777"

@@ -1,0 +1,12 @@
+[package]
+name = "mintable"
+version = "0.0.1"
+upgrade_policy = "compatible"
+
+[dependencies]
+AptosFramework = { git = "https://github.com/aptos-labs/aptos-core.git", subdir = "aptos-move/framework/aptos-framework/", rev = "devnet" }
+multichain = { local = "../router" }
+# addr_subst: rename N to P1N for this package use 
+# P1 = { local = "some_path_to_P1", addr_subst = { "P1N" = "N" } }
+[addresses]
+TEST="0x10878abd3802be00d674709b1e5554488823f5f825bce8d1efaf370e9aaac777"

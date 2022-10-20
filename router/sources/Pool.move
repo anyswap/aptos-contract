@@ -1,0 +1,299 @@
+/// This module provides the foundation for multichain anyCoin
+module Multichain::Pool { 
+    use std::string;   
+    use std::signer; 
+    use std::error;
+    use std::vector;
+    use aptos_framework::coin::{Self, BurnCapability, MintCapability, FreezeCapability}; 
+    use aptos_std::type_info::{Self, TypeInfo};
+    use aptos_std::table::{Self, Table};
+
+    // friend Multichain::Router;
+
+    // store key: PoolCoin TypeInfo value: UnderlyingCoin TypeInfo
+    struct PoolCoinMap has key{
+        t : Table<TypeInfo, TypeInfo>
+    }
+     // store key: UnderlyingCoin TypeInfo TypeInfo value: PoolCoin TypeInfo
+    struct UnderlyingCoinMap has key{
+        t : Table<TypeInfo, TypeInfo>
+    }
+
+    struct Vault<phantom UnderlyingCoinType> has key, store {
+        coin: coin::Coin<UnderlyingCoinType>,
+    } 
+
+    struct Capabilities<phantom PoolCoinType> has key {
+        mint_cap: MintCapability<PoolCoinType>,
+        freeze_cap: FreezeCapability<PoolCoinType>,
+        burn_cap: BurnCapability<PoolCoinType>,
+    }
+
+    fun init_module( admin: &signer ) {
+        move_to(admin, PoolCoinMap {
+            t: table::new(),
+        });
+        move_to(admin, UnderlyingCoinMap {
+            t: table::new(),
+        });
+        move_to(admin, PoolPairs {
+            list: vector::empty<string::String>(),
+        });
+    }
+
+    public entry fun register_coin<UnderlyingCoinType, PoolCoinType>(admin: &signer, name: string::String, symbol: string::String, decimals: u8) 
+        acquires PoolCoinMap,UnderlyingCoinMap,PoolPairs {
+        let admin_addr = signer::address_of(admin);
+        assert!(admin_addr == @Multichain, error::permission_denied(1));
+        assert!(
+            !exists<Vault<UnderlyingCoinType>>(admin_addr),
+            error::already_exists(2),
+        );
+
+        let pc_type_info = type_info::type_of<PoolCoinType>();
+        let pc_address = type_info::account_address(&pc_type_info);
+        assert!(
+            pc_address == admin_addr,
+            error::permission_denied(3),
+        );
+
+        let vault = Vault<UnderlyingCoinType> {
+            coin: coin::zero<UnderlyingCoinType>(),
+        };
+        move_to(admin, vault);
+
+        let (burn_cap, freeze_cap, mint_cap) = coin::initialize<PoolCoinType>(
+            admin,
+            name,
+            symbol,
+            decimals, 
+            false, 
+        );
+        move_to(admin, Capabilities<PoolCoinType> { mint_cap,freeze_cap, burn_cap } );
+
+        let underlying_type_info = type_info::type_of<UnderlyingCoinType>();
+
+        let pc_map = borrow_global_mut<PoolCoinMap>(admin_addr);
+        table::add(&mut pc_map.t, pc_type_info, underlying_type_info);
+
+        let underlying_map = borrow_global_mut<UnderlyingCoinMap>(admin_addr);
+        table::add(&mut underlying_map.t, underlying_type_info, pc_type_info);
+
+        if (!exists<PoolPairs>(admin_addr)){
+            move_to(admin, PoolPairs {
+                list: vector::empty<string::String>(),
+            });
+        };
+        let pool_pairs = borrow_global_mut<PoolPairs>(admin_addr);
+
+        let pairs = type_info::type_name<PoolCoinType>();
+        string::append(&mut pairs, string::utf8(b","));
+        string::append(&mut pairs, type_info::type_name<UnderlyingCoinType>());
+
+        vector::push_back<string::String>(&mut pool_pairs.list, pairs);
+    }
+
+     public entry fun query_underlying<PoolCoinType>(): (address, vector<u8>) acquires PoolCoinMap {
+        let pc_type_info = type_info::type_of<PoolCoinType>();
+        let pc_address = type_info::account_address(&pc_type_info);
+
+        if (pc_address != @Multichain) { 
+            (pc_address, b"")
+        }else{
+            let pc_map = borrow_global_mut<PoolCoinMap>(@Multichain);
+            if (table::contains(&pc_map.t, pc_type_info)){
+                let underlying_type = table::borrow(&pc_map.t, pc_type_info);
+                let rtn = &mut vector::empty<u8>();
+                vector::append<u8>(rtn, type_info::module_name(underlying_type));
+                vector::append<u8>(rtn, (b"::"));
+                vector::append<u8>(rtn, type_info::struct_name(underlying_type));
+                (type_info::account_address(underlying_type), *rtn)
+            }else{
+                (pc_address, b"")
+            }
+        }
+    }
+
+    // add liquidity with underlying token
+    public entry fun deposit<UnderlyingCoinType, PoolCoinType>(account: &signer, amount: u64) acquires UnderlyingCoinMap, Vault, Capabilities {  
+        check_coin_type<UnderlyingCoinType, PoolCoinType>();
+
+        // deposit underlying token  
+        let vault_coin = &mut borrow_global_mut<Vault<UnderlyingCoinType>>(@Multichain).coin;  
+        let deposit_coin = coin::withdraw<UnderlyingCoinType>(account, amount);
+        coin::merge<UnderlyingCoinType>(vault_coin, deposit_coin);
+  
+        // mint pool token  
+        let cap = borrow_global<Capabilities<PoolCoinType>>(@Multichain);  
+        let coins_minted = coin::mint<PoolCoinType>(amount, &cap.mint_cap); 
+        coin::deposit<PoolCoinType>(signer::address_of(account), coins_minted); 
+    } 
+    // 
+    public entry fun withdraw<PoolCoinType, UnderlyingCoinType>(account: &signer, amount: u64) acquires UnderlyingCoinMap, Vault, Capabilities {  
+        check_coin_type<UnderlyingCoinType, PoolCoinType>();
+        // burn pool token
+        let cap = borrow_global<Capabilities<PoolCoinType>>(@Multichain);  
+        let coins_burned = coin::withdraw(account, amount);
+        coin::burn(coins_burned, &cap.burn_cap);
+
+        // withdraw underlying token  
+        let vault_coin = &mut borrow_global_mut<Vault<UnderlyingCoinType>>(@Multichain).coin;  
+        let withdraw_coin = coin::extract(vault_coin, amount);
+        coin::deposit<UnderlyingCoinType>(signer::address_of(account), withdraw_coin);
+    }
+
+    // liquidity providers should not use this function, or coin will get lost
+    public entry fun depositByVault<CoinType>(deposit_coin: coin::Coin<CoinType>) acquires Vault {  
+        let type_info = type_info::type_of<Vault<CoinType>>();
+        let vault_address = type_info::account_address(&type_info);
+        
+        // deposit underlying token  
+        let vault_coin = &mut borrow_global_mut<Vault<CoinType>>(vault_address).coin;  
+        coin::merge<CoinType>(vault_coin, deposit_coin);
+    }
+ 
+    public entry fun withdrawByVault<CoinType>(account: &signer, amount: u64): coin::Coin<CoinType> acquires Vault {  
+        let type_info = type_info::type_of<Vault<CoinType>>();
+        let vault_address = type_info::account_address(&type_info);
+
+        assert!(
+            signer::address_of(account) == vault_address,
+            error::permission_denied(2),
+        );
+
+        // withdraw underlying token  
+        let vault_coin = &mut borrow_global_mut<Vault<CoinType>>(vault_address).coin;  
+        coin::extract(vault_coin, amount)
+    }  
+
+    public entry fun vault<CoinType>(account: &signer): u64 acquires Vault{  
+        let type_info = type_info::type_of<Vault<CoinType>>();
+        let vault_address = type_info::account_address(&type_info);
+
+        assert!(
+            signer::address_of(account) == vault_address,
+            error::permission_denied(2),
+        );
+        let value = coin::value(&borrow_global_mut<Vault<CoinType>>(vault_address).coin);  
+        value
+    } 
+    
+    // return mint/burn capabilities 
+    public fun copy_capabilities<CoinType>(account: &signer): (MintCapability<CoinType>, BurnCapability<CoinType>) acquires Capabilities {  
+        let type_info = type_info::type_of<CoinType>();
+        let vault_address = type_info::account_address(&type_info);
+
+        assert!(
+            signer::address_of(account) == vault_address,
+            error::permission_denied(1),
+        );
+        let cap = borrow_global<Capabilities<CoinType>>(@Multichain);
+        (cap.mint_cap, cap.burn_cap)
+    } 
+
+    public fun mint_poolcoin<UnderlyingCoinType, PoolCoinType>(account: &signer, receiver: address, amount: u64) acquires UnderlyingCoinMap,  Capabilities {  
+        assert!(signer::address_of(account) == @Multichain, error::permission_denied(0));
+        check_coin_type<UnderlyingCoinType, PoolCoinType>();
+        // mint pool token  
+        let cap = borrow_global<Capabilities<PoolCoinType>>(@Multichain);  
+        let coins_minted = coin::mint<PoolCoinType>(amount, &cap.mint_cap); 
+        coin::deposit<PoolCoinType>(receiver, coins_minted); 
+    }
+
+     public fun burn_poolcoin<UnderlyingCoinType, PoolCoinType>(account: &signer, from: address, amount: u64) acquires UnderlyingCoinMap,  Capabilities {  
+        assert!(signer::address_of(account) == @Multichain, error::permission_denied(0));
+        check_coin_type<UnderlyingCoinType, PoolCoinType>();
+        // mint pool token  
+        let cap = borrow_global<Capabilities<PoolCoinType>>(@Multichain);  
+        coin::burn_from<PoolCoinType>(from, amount, &cap.burn_cap);
+    }
+    
+    fun check_coin_type<UnderlyingCoinType, PoolCoinType>() acquires UnderlyingCoinMap{
+        let type_info = type_info::type_of<UnderlyingCoinType>();
+
+        let map = borrow_global<UnderlyingCoinMap>(@Multichain);
+        assert!(table::contains(&map.t, type_info), error::not_found(404));
+
+        let poolcoin_type = table::borrow(&map.t, type_info);
+        let pc_type_info = type_info::type_of<PoolCoinType>();
+        assert!(poolcoin_type == &pc_type_info, error::not_found(404));
+    }
+
+    struct PoolPairs has key{
+        list : vector<string::String>
+    }
+
+    #[test_only]
+    public entry fun initialize(account: &signer){  
+        init_module(account)
+    } 
+
+    #[test_only]
+    use Bob::TestCoin::{Self, MyCoin};
+    #[test_only]
+    use Multichain::PoolCoin::{AnyMyCoin};
+    #[test_only]
+    use aptos_framework::account;
+
+    #[test(from = @Multichain, to= @Bob)]
+    public entry fun test_pool_coin(from: &signer, to: &signer)  acquires PoolCoinMap, UnderlyingCoinMap, Vault, Capabilities,PoolPairs{
+        let to_addr = signer::address_of(to);
+        account::create_account_for_test(to_addr);
+        // step1. init fake token 'MyCoin' and mint to_addr token 
+        TestCoin::initialize(to);
+        coin::register<MyCoin>(to);
+        assert!(coin::balance<MyCoin>(to_addr) == 0, 1);
+
+        let mint_cap = TestCoin::extract_capability(to);
+        let coins_minted = coin::mint<MyCoin>(1000, &mint_cap);
+        coin::deposit(to_addr, coins_minted);
+
+        assert!(coin::balance<MyCoin>(to_addr) == 1000, 2);
+
+        // step2. init any token 'anyMyCoin'
+        initialize(from);
+        register_coin<MyCoin, AnyMyCoin>(
+            from,
+            string::utf8(b"AnyMyCoin"),
+            string::utf8(b"AnyMC"),
+            18
+        );
+
+        let (addr, rtn) = query_underlying<AnyMyCoin>();
+        std::debug::print(&addr);
+        std::debug::print(&string::utf8(rtn));
+        std::debug::print(&string::utf8(b"TestCoin::MyCoin"));
+        assert!(addr == @Bob, 99);
+        assert!(rtn == (b"TestCoin::MyCoin"), 99);
+        
+        // step3. deposit MyCoin to PoolCoin
+        coin::register<AnyMyCoin>(to);   
+        deposit<MyCoin, AnyMyCoin>(to, 100);
+
+        assert!(coin::balance<MyCoin>(to_addr) == 900, 3);
+        assert!(coin::balance<AnyMyCoin>(to_addr) == 100, 4);
+
+        
+        // step4. withdraw PoolCoin to MyCoin
+        withdraw<AnyMyCoin, MyCoin>(to, 100);
+        assert!(coin::balance<MyCoin>(to_addr) == 1000, 5);
+        assert!(coin::balance<AnyMyCoin>(to_addr) == 0, 6);
+
+        // step5. deposit MyCoin directly
+        let coins_minted2 = coin::mint<MyCoin>(1000, &mint_cap);
+        depositByVault(coins_minted2);
+        assert!(vault<MyCoin>(from) == 1000, 7);
+
+        // step6. withdraw MyCoin directly
+        let coin = withdrawByVault<MyCoin>(from, 1000);
+        coin::deposit(to_addr, coin);
+        assert!(coin::balance<MyCoin>(to_addr) == 2000, 8);
+        assert!(vault<MyCoin>(from) == 0, 9);
+
+        // end
+        // std::debug::print(&coin::supply<MyCoin>());
+        std::debug::print(&error::not_found(404));
+        TestCoin::put_capability(to, mint_cap );
+        
+    }
+}
