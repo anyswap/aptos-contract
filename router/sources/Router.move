@@ -164,15 +164,4 @@ module Multichain::Router {
         let status = borrow_global<Status>(@Multichain);
         assert!(status.open == 1, error::unavailable(502));
     }
-
-    // drop mint/burn cap
-    
-    #[test_only]
-    public entry fun initialize_fot_test(account: &signer){  
-        let source_addr = signer::address_of(account);
-        if (!account::exists_at(source_addr)){
-            account::create_account_for_test(source_addr);
-        };
-        init_module(account)
-    } 
 }
