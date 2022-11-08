@@ -50,11 +50,13 @@ module Multichain::Pool {
             error::already_exists(2),
         );
 
+        assert!(coin::is_coin_initialized<UnderlyingCoinType>(), error::not_found(3));
+
         let pc_type_info = type_info::type_of<PoolCoinType>();
         let pc_address = type_info::account_address(&pc_type_info);
         assert!(
             pc_address == admin_addr,
-            error::permission_denied(3),
+            error::permission_denied(4),
         );
 
         let vault = Vault<UnderlyingCoinType> {
@@ -91,27 +93,6 @@ module Multichain::Pool {
         string::append(&mut pairs, type_info::type_name<UnderlyingCoinType>());
 
         vector::push_back<string::String>(&mut pool_pairs.list, pairs);
-    }
-
-     public entry fun query_underlying<PoolCoinType>(): (address, vector<u8>) acquires PoolCoinMap {
-        let pc_type_info = type_info::type_of<PoolCoinType>();
-        let pc_address = type_info::account_address(&pc_type_info);
-
-        if (pc_address != @Multichain) { 
-            (pc_address, b"")
-        }else{
-            let pc_map = borrow_global_mut<PoolCoinMap>(@Multichain);
-            if (table::contains(&pc_map.t, pc_type_info)){
-                let underlying_type = table::borrow(&pc_map.t, pc_type_info);
-                let rtn = &mut vector::empty<u8>();
-                vector::append<u8>(rtn, type_info::module_name(underlying_type));
-                vector::append<u8>(rtn, (b"::"));
-                vector::append<u8>(rtn, type_info::struct_name(underlying_type));
-                (type_info::account_address(underlying_type), *rtn)
-            }else{
-                (pc_address, b"")
-            }
-        }
     }
 
     // add liquidity with underlying token
@@ -164,9 +145,9 @@ module Multichain::Pool {
         // withdraw underlying token  
         let vault_coin = &mut borrow_global_mut<Vault<CoinType>>(vault_address).coin;  
         coin::extract(vault_coin, amount)
-    }  
+    }
 
-    public entry fun vault<CoinType>(account: &signer): u64 acquires Vault{  
+    public fun vault<CoinType>(account: &signer): u64 acquires Vault{  
         let type_info = type_info::type_of<Vault<CoinType>>();
         let vault_address = type_info::account_address(&type_info);
 
@@ -174,7 +155,7 @@ module Multichain::Pool {
             signer::address_of(account) == vault_address,
             error::permission_denied(2),
         );
-        let value = coin::value(&borrow_global_mut<Vault<CoinType>>(vault_address).coin);  
+        let value = coin::value(&borrow_global<Vault<CoinType>>(vault_address).coin);  
         value
     } 
     
