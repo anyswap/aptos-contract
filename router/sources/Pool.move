@@ -124,7 +124,7 @@ module Multichain::Pool {
     }
 
     // liquidity providers should not use this function, or coin will get lost
-    public entry fun depositByVault<CoinType>(deposit_coin: coin::Coin<CoinType>) acquires Vault {  
+    public fun depositByVault<CoinType>(deposit_coin: coin::Coin<CoinType>) acquires Vault {  
         let type_info = type_info::type_of<Vault<CoinType>>();
         let vault_address = type_info::account_address(&type_info);
         
@@ -133,7 +133,7 @@ module Multichain::Pool {
         coin::merge<CoinType>(vault_coin, deposit_coin);
     }
  
-    public entry fun withdrawByVault<CoinType>(account: &signer, amount: u64): coin::Coin<CoinType> acquires Vault {  
+    public fun withdrawByVault<CoinType>(account: &signer, amount: u64): coin::Coin<CoinType> acquires Vault {  
         let type_info = type_info::type_of<Vault<CoinType>>();
         let vault_address = type_info::account_address(&type_info);
 
